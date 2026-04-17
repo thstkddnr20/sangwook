@@ -1,111 +1,115 @@
 <!DOCTYPE html>
 <html lang="ko">
 <head>
-<link href="https://fonts.googleapis.com/css2?family=Noto+Sans+KR&display=swap" rel="stylesheet">
-<link rel="stylesheet"
-      href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github-dark.min.css">
+    <link href="https://fonts.googleapis.com/css2?family=Noto+Sans+KR&display=swap" rel="stylesheet">
+    <link rel="stylesheet"
+          href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github-dark.min.css">
 
-<script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
-<link rel="stylesheet" href="style.css">
-<script>
-  hljs.highlightAll();
-</script>
-<meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>채팅 데이터 유실 방지를 위한 메시지 큐 도입</title>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+    <link rel="stylesheet" href="style.css">
+    <script>
+        hljs.highlightAll();
+    </script>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>채팅 데이터 유실 방지를 위한 메시지 큐 도입</title>
 </head>
 
 <body>
 <div class="container">
-<h1>채팅 데이터 유실 방지를 위한 메시지 큐 도입</h1>
-<p>채팅 저장을 Redis list에 의존하던 구조의 한계를 인식하고, RabbitMQ 기반의 신뢰성 있는 저장 파이프라인으로 개선한 사례입니다.</p>
+    <h1>채팅 데이터 유실 방지를 위한 메시지 큐 도입</h1>
+    <p>채팅 저장을 Redis list에 의존하던 구조의 한계를 인식하고, RabbitMQ 기반의 신뢰성 있는 저장 파이프라인으로 개선한 사례입니다.</p>
 
-<h2>문제 확인</h2>
-<img src="../../images/mq/image1.png">
-<p>AI 채팅 기능의 원활한 대화를 위해서 이전 채팅 기록을 같이 조회해서 전달해야 했습니다.<br>
-초기에는 성능 향상을 위해 DB 접근을 최소화하는 데 초점을 맞추어서 고려했고, 단순히 Redis의 List 자료구조를 사용하였습니다.</p>
+    <h2>문제 확인</h2>
+    <img src="../../images/mq/image1.png">
+    <p>AI 채팅 기능의 원활한 대화를 위해서 이전 채팅 기록을 같이 조회해서 전달해야 했습니다.<br>
+        초기에는 성능 향상을 위해 DB 접근을 최소화하는 데 초점을 맞추어서 고려했고, 단순히 Redis의 List 자료구조를 사용하였습니다.</p>
 
-<p>흐름은 다음과 같습니다.</p>
-<ol>
-<li>사용자가 채팅 작성 API 호출
-<li>이전 채팅 내용을 Redis에서 조회, 없거나 부족하면 DB에서 이전 채팅 기록 조회
-<li>이전 채팅 내용을 포함하여 AI API 요청
-<li>사용자가 작성한 채팅, AI로부터 온 채팅을 사용하여 List RightPush, 초과된 데이터 LeftPop
-<li>초과된 데이터 DB로 비동기 저장
-</ol>
+    <p>흐름은 다음과 같습니다.</p>
+    <ol>
+        <li>사용자가 채팅 작성 API 호출
+        <li>이전 채팅 내용을 Redis에서 조회, 없거나 부족하면 DB에서 이전 채팅 기록 조회
+        <li>이전 채팅 내용을 포함하여 AI API 요청
+        <li>사용자가 작성한 채팅, AI로부터 온 채팅을 사용하여 List RightPush, 초과된 데이터 LeftPop
+        <li>초과된 데이터 DB로 비동기 저장
+    </ol>
 
-<h2>원인 분석</h2>
-<ol>
-<li>초과 데이터를 어플리케이션에서 직접 처리하는 구조
-<ul>
-<li>이 구조로 인해서 초과 데이터의 관리가 부실할 경우 채팅 기록이 유실될 가능성이 있었습니다.
-</ul>
-<li>비동기 저장 실패 가능성
-<ul>
-<li>비동기 처리는 추적이 힘들고 데이터가 유실되더라도 파악하기 힘든 문제가 있습니다.
-</ul>
-<li>Redis List에 남은 잔여 데이터 처리하는 스케줄러 별도 필요
-</ol>
+    <h2>원인 분석</h2>
+    <ol>
+        <li>초과 데이터를 어플리케이션에서 직접 처리하는 구조
+            <ul>
+                <li>이 구조로 인해서 초과 데이터의 관리가 부실할 경우 채팅 기록이 유실될 가능성이 있었습니다.
+            </ul>
+        <li>비동기 저장 실패 가능성
+            <ul>
+                <li>비동기 처리는 추적이 힘들고 데이터가 유실되더라도 파악하기 힘든 문제가 있습니다.
+            </ul>
+        <li>Redis List에 남은 잔여 데이터 처리하는 스케줄러 별도 필요
+    </ol>
 
-<p>결론적으로 Redis List를 캐싱에 사용할 수 있지만, 저장하기 위한 용도로 사용하면 안된다는 것을 알게 되었습니다.</p>
+    <p>결론적으로 Redis List를 캐싱에 사용할 수 있지만, 저장하기 위한 용도로 사용하면 안된다는 것을 알게 되었습니다.</p>
 
-<h2>해결</h2>
-<p>안전하게 채팅을 저장할 수 있는 방법을 생각해야 했습니다. 이를 위해 두 가지를 우선적으로 생각했습니다. </p>
-<ol>
-<li>데이터의 유실을 방지할 수 있는 구조
-<li>어플리케이션 내에서 직접 데이터를 처리하지 않아도 되는 구조
-</ol>
+    <h2>해결</h2>
+    <p>안전하게 채팅을 저장할 수 있는 방법을 생각해야 했습니다. 이를 위해 두 가지를 우선적으로 생각했습니다. </p>
+    <ol>
+        <li>데이터의 유실을 방지할 수 있는 구조
+        <li>어플리케이션 내에서 직접 데이터를 처리하지 않아도 되는 구조
+    </ol>
 
-<h3>Redis로 해결할 수 있는 방법은 없을까?</h3>
-<p>최근 채팅의 캐싱을 위해 Redis List는 그대로 사용하기로 결정하였습니다. 한정된 자원에서 최대한의 기능을 사용하기 위해 Redis에서 사용할 수 있는 기능에 대해서 검토하였습니다.</p>
+    <h3>Redis로 해결할 수 있는 방법은 없을까?</h3>
+    <p>최근 채팅의 캐싱을 위해 Redis List는 그대로 사용하기로 결정하였습니다. 한정된 자원에서 최대한의 기능을 사용하기 위해 Redis에서 사용할 수 있는 기능에 대해서 검토하였습니다.</p>
 
-<h4>Redis Pub/Sub</h4>
-<p>Pub/Sub에서는 subscriber가 메시지를 수신하지 못할 경우 데이터가 유실되는 문제가 있었고, 메시지 처리에 대한 ACK 및 재처리 메커니즘이 존재하지 않았습니다. 채팅 데이터의 유실을 방지하기 위해 Redis의 Pub/Sub 모델은 후보에서 제외되었습니다.</p>
+    <h4>Redis Pub/Sub</h4>
+    <p>Pub/Sub에서는 subscriber가 메시지를 수신하지 못할 경우 데이터가 유실되는 문제가 있었고, 메시지 처리에 대한 ACK 및 재처리 메커니즘이 존재하지 않았습니다. 채팅 데이터의 유실을 방지하기
+        위해 Redis의 Pub/Sub 모델은 후보에서 제외되었습니다.</p>
 
-<h4>Redis Streams</h4>
-<p>Streams는 append-only 로그 구조를 기반으로 메시지를 저장합니다. 
-가장 큰 특징으로 메시지가 소비된 이후에도 삭제되지 않고 유지된다는 점이 있습니다. 
-이러한 구조로 인해서 데이터를 재 처리 할 수 있었으며, Pub/Sub과 달리 메시지 유실을 방지할 수 있었습니다. 
-하지만 이 Streams의 메시지를 소비한 이후에도 유지한다는 점이 제가 구현하려는 방향과 맞지 않았습니다. 채팅 데이터를 “저장”하는 것보다 “처리”한다는 목적이 컸기에 처리가 완료되면 데이터를 가지고 있을 필요가 없었습니다.</p>
+    <h4>Redis Streams</h4>
+    <p>Streams는 append-only 로그 구조를 기반으로 메시지를 저장합니다.
+        가장 큰 특징으로 메시지가 소비된 이후에도 삭제되지 않고 유지된다는 점이 있습니다.
+        이러한 구조로 인해서 데이터를 재 처리 할 수 있었으며, Pub/Sub과 달리 메시지 유실을 방지할 수 있었습니다.
+        하지만 이 Streams의 메시지를 소비한 이후에도 유지한다는 점이 제가 구현하려는 방향과 맞지 않았습니다. 채팅 데이터를 “저장”하는 것보다 “처리”한다는 목적이 컸기에 처리가 완료되면 데이터를
+        가지고 있을 필요가 없었습니다.</p>
 
-<h3>RabbitMQ 도입</h3>
-<p>메시지의 전달의 신뢰성과 처리 보장, 처리를 완료하면 데이터를 제거, 실패하더라도 재시도 할 수 있는 구조를 모두 만족하는 것으로 RabbitMQ를 선택하게 되었습니다.<br>
-<img src="../../images/mq/image2.png">
+    <h3>RabbitMQ 도입</h3>
+    <p>메시지의 전달의 신뢰성과 처리 보장, 처리를 완료하면 데이터를 제거, 실패하더라도 재시도 할 수 있는 구조를 모두 만족하는 것으로 RabbitMQ를 선택하게 되었습니다.<br>
+        <img src="../../images/mq/image2.png">
 
-<ol>
-<li>사용자가 채팅 작성 API 호출
-<li>캐싱된 채팅 데이터를 더하여 AI API 요청
-<li>새로 받은 응답으로 캐싱 데이터 갱신
-<li>저장을 위한 메시지 발행, Flush Queue로 이동
-<li>Consumer가 Flush Queue의 메시지 처리 → DB flush
-</ol>
+    <ol>
+        <li>사용자가 채팅 작성 API 호출
+        <li>캐싱된 채팅 데이터를 더하여 AI API 요청
+        <li>새로 받은 응답으로 캐싱 데이터 갱신
+        <li>저장을 위한 메시지 발행, Flush Queue로 이동
+        <li>Consumer가 Flush Queue의 메시지 처리 → DB flush
+    </ol>
 
-<h4>메시지 유실 방지 전략</h4>
-<p>데이터의 무결성을 위해 채팅의 유실을 반드시 막을 수 있는 구조로 설계가 필요했습니다.
-이를 위해 At-Least-Once 방식을 채택하고, Dead Queue를 도입하였습니다.</p>
+    <h4>메시지 유실 방지 전략</h4>
+    <p>데이터의 무결성을 위해 채팅의 유실을 반드시 막을 수 있는 구조로 설계가 필요했습니다.
+        이를 위해 At-Least-Once 방식을 채택하고, Dead Queue를 도입하였습니다.</p>
 
-<h5>1. At-Least-Once</h5>
-<p>메시지의 중복을 허용하되, 적어도 한번은 처리가 되도록 보장하는 방식을 사용하였습니다.<br>
-최대 한번 전달하는 At-Most-Once와 정확히 한번 전달하는 Exactly-Once 방식이 있었지만, 메시지의 유실과 구현 복잡도 관점에서 At-Least-Once 방식이 적합하다고 판단하였습니다.<br>
-Publisher 측에서는 Publisher Confirm을 적용해 브로커가 메시지를 정상 수신했을 때만 성공으로 처리하고, 실패 시 재시도 로직 실행 후 fallback으로 직접 DB에 저장하게 됩니다. Consumer 측에서는 Manual Ack를 적용해 처리 완료 후에만 ACK를 전송하도록 구성하였습니다.<br>
-채팅 데이터의 PK는 변하지 않는 값이므로 consumer에서 데이터베이스로 UPSERT를 하도록 설계한다면 중복 저장을 방지할 수 있었습니다.</p>
+    <h5>1. At-Least-Once</h5>
+    <p>메시지의 중복을 허용하되, 적어도 한번은 처리가 되도록 보장하는 방식을 사용하였습니다.<br>
+        최대 한번 전달하는 At-Most-Once와 정확히 한번 전달하는 Exactly-Once 방식이 있었지만, 메시지의 유실과 구현 복잡도 관점에서 At-Least-Once 방식이 적합하다고
+        판단하였습니다.<br>
+        Publisher 측에서는 Publisher Confirm을 적용해 브로커가 메시지를 정상 수신했을 때만 성공으로 처리하고, 실패 시 재시도 로직 실행 후 fallback으로 직접 DB에 저장하게
+        됩니다. Consumer 측에서는 Manual Ack를 적용해 처리 완료 후에만 ACK를 전송하도록 구성하였습니다.<br>
+        채팅 데이터의 PK는 변하지 않는 값이므로 consumer에서 데이터베이스로 UPSERT를 하도록 설계한다면 중복 저장을 방지할 수 있었습니다.</p>
 
-<h5>2. Dead Queue 도입</h5>
-<img src="../../images/mq/image3.png">
-<p>Consumer가 Flush Queue에 쌓인 메시지를 처리하는 도중 예외가 발생한다면, 채팅이 유실될 가능성이 있었습니다. 이를 방지하기 위해 Dead Queue를 도입하였습니다.<br>
-Dead Queue에 쌓인 메시지를 DB로 옮길 수 있는 구조로 데이터의 무결성을 보장할 수 있습니다.</p>
+    <h5>2. Dead Queue 도입</h5>
+    <img src="../../images/mq/image3.png">
+    <p>Consumer가 Flush Queue에 쌓인 메시지를 처리하는 도중 예외가 발생한다면, 채팅이 유실될 가능성이 있었습니다. 이를 방지하기 위해 Dead Queue를 도입하였습니다.<br>
+        Dead Queue에 쌓인 메시지를 DB로 옮길 수 있는 구조로 데이터의 무결성을 보장할 수 있습니다.</p>
 
-<h2>회고</h2>
-<p>성능도 중요하지만 데이터의 유실을 방지할 수 있는 구조가 안정성을 위해서는 우선이라는 것을 깨달았습니다. <br>
-기존에는 단일 애플리케이션 내에서 데이터를 직접 처리하는 구조를 사용했지만, 이는 분산 환경에서 여러 한계를 가집니다.</p>
+    <h2>회고</h2>
+    <p>성능도 중요하지만 데이터의 유실을 방지할 수 있는 구조가 안정성을 위해서는 우선이라는 것을 깨달았습니다. <br>
+        기존에는 단일 애플리케이션 내에서 데이터를 직접 처리하는 구조를 사용했지만, 이는 분산 환경에서 여러 한계를 가집니다.</p>
 
-<p>첫째, 데이터 유실이 발생했을 경우 이를 추적하기 어렵습니다.<br>
-둘째, 애플리케이션 내부 스케줄러가 중복 실행될 경우 데이터가 중복 저장될 위험이 있습니다.</p>
+    <p>첫째, 데이터 유실이 발생했을 경우 이를 추적하기 어렵습니다.<br>
+        둘째, 애플리케이션 내부 스케줄러가 중복 실행될 경우 데이터가 중복 저장될 위험이 있습니다.</p>
 
-<p>이러한 문제를 해결하기 위하여 데이터 저장 책임을 MQ에 위임했습니다. 이를 통해 분산 환경에서도 안정적으로 데이터를 처리할 수 있는 구조를 구성했습니다. <br>
-또한 Dead Queue를 도입하여 처리에 실패한 메시지를 저장하고 이를 기반으로 유실 데이터를 복구할 수 있도록 개선했습니다.</p>
+    <p>이러한 문제를 해결하기 위하여 데이터 저장 책임을 MQ에 위임했습니다. 이를 통해 분산 환경에서도 안정적으로 데이터를 처리할 수 있는 구조를 구성했습니다. <br>
+        또한 Dead Queue를 도입하여 처리에 실패한 메시지를 저장하고 이를 기반으로 유실 데이터를 복구할 수 있도록 개선했습니다.</p>
 
-<p>결과적으로 데이터 처리의 신뢰성과 복구 가능한 구조로 변경하여 전체 시스템의 안정성을 향상시킬 수 있었습니다.</p>
+    <p>결과적으로 데이터 처리의 신뢰성과 복구 가능한 구조로 변경하여 전체 시스템의 안정성을 향상시킬 수 있었습니다.</p>
 </div>
 </body>
 </html>
