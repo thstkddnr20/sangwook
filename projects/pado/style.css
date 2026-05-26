@@ -82,3 +82,13 @@ img {
 .image-row img {
   width: 50%;
 }
+
+ol ul {
+    margin-top: 4px;
+    margin-bottom: 12px;
+    padding-left: 24px;
+}
+
+ol li, ul li {
+    line-height: 1.5;
+}
