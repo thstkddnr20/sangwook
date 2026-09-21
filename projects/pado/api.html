@@ -1,100 +1,244 @@
 <!DOCTYPE html>
 <html lang="ko">
 <head>
-    <link href="https://fonts.googleapis.com/css2?family=Noto+Sans+KR&display=swap" rel="stylesheet">
-    <link rel="stylesheet"
-          href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github-dark.min.css">
-
-    <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
-    <link rel="stylesheet" href="style.css">
-    <script>
-        hljs.highlightAll();
-    </script>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>외부 API 호출 안정성 확보를 위한 제어·탐지·분석 체계 구축</title>
+
+    <link href="https://fonts.googleapis.com/css2?family=Noto+Sans+KR&display=swap" rel="stylesheet">
+    <link rel="stylesheet"
+          href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github-dark.min.css">
+    <link rel="stylesheet" href="style.css">
+
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+    <script>
+        document.addEventListener('DOMContentLoaded', function () {
+            hljs.highlightAll();
+        });
+    </script>
+
+    <style>
+        /* style.css에 없을 수 있는 요소만 보강 */
+        .summary {
+            margin: 20px 0 8px;
+            padding: 14px 18px;
+            border-left: 4px solid #4f46e5;
+            border-radius: 0 8px 8px 0;
+            background: #f5f7ff;
+        }
+
+        .summary ul {
+            margin: 0;
+            padding-left: 18px;
+        }
+
+        .summary li {
+            margin: 6px 0;
+        }
+
+        table.compare {
+            width: 100%;
+            margin: 16px 0;
+            border-collapse: collapse;
+            font-size: 14px;
+        }
+
+        table.compare th,
+        table.compare td {
+            padding: 10px 12px;
+            border: 1px solid #d9dde3;
+            text-align: left;
+            vertical-align: top;
+        }
+
+        table.compare th {
+            background: #f0f2f5;
+        }
+
+        img {
+            max-width: 100%;
+            height: auto;
+        }
+    </style>
 </head>
 
 <body>
 <div class="container">
     <h1>외부 API 호출 안정성 확보를 위한 제어·탐지·분석 체계 구축</h1>
-    <p>외부 API 호출 실패에 대한 가시성과 대응 전략이 부족하여 운영 리스크가 증가하였고, 이를 체계적으로 관리하기 위한 제어·탐지·분석 구조를 도입한 사례입니다.</p>
+    <p>외부 AI API의 장애가 채팅 서비스 전체의 장애로 번지지 않도록, 호출을 제어하고 장애를 먼저 감지하며 원인을 조회할 수 있는 구조를 만든 사례입니다.</p>
+
+    <div class="summary">
+        <ul>
+            <li><strong>문제</strong> AI 응답이 없으면 스레드가 timeout까지 묶이고, 장애는 로그를 열어 봐야만 알 수 있었음</li>
+            <li><strong>해결</strong> Retry + Circuit Breaker로 제어, 메트릭·이메일 알림으로 탐지, JSON 구조화 로그로 분석</li>
+            <li><strong>결과</strong> 일시적 오류는 사용자에게 보이지 않고, 지속 장애는 호출을 차단하며, 장애를 알림으로 먼저 인지</li>
+        </ul>
+    </div>
 
     <h2>1. 문제 정의</h2>
-    <p>서비스의 채팅 기능은 외부 API를 호출하여 사용합니다. 이를 올바르게 컨트롤하지 못할 경우 사용성이 떨어지는 것 뿐만 아니라 서비스 장애로 이어질 수 있습니다.</p>
+    <p>채팅 기능은 외부 AI API에 의존하기 때문에, 호출을 제어하지 못하면 사용성 저하를 넘어 서비스 장애로 이어질 수 있습니다.</p>
     <ol>
         <li>
-            AI 응답 불가 시 쓰레드 점유 가능성
+            <strong>AI 응답 불가 시 스레드 점유</strong>
             <ul>
-                <li>
-                    AI 서버에 문제가 생긴 경우 쓰레드를 점유하게 되어 가용 가능한 쓰레드가 매우 감소할 수 있습니다.
-                    이를 위해 timeout 시간을 설정할 수 있지만, timeout 시간 동안 쓰레드가 점유하는 문제는 막을 수 없습니다.
-                </li>
+                <li>AI 서버가 응답하지 않으면 요청 스레드가 timeout이 끝날 때까지 묶이고, 가용 스레드가 크게 줄어들 수 있습니다.</li>
+                <li>timeout을 설정해도 그 시간 동안의 점유 자체는 막을 수 없습니다.</li>
             </ul>
         </li>
-
         <li>
-            외부 API 사용 문제가 발생할 경우 인지할 수 없는 구조
+            <strong>장애를 인지할 수 없는 구조</strong>
             <ul>
-                <li>
-                    별도의 알림 기능이 없다면 로그를 확인하기 전까지는 문제를 파악할 수 없는 구조입니다.
-                </li>
+                <li>별도의 알림이 없어서, 로그를 확인하기 전까지는 실패 여부와 빈도를 알 수 없었습니다.</li>
             </ul>
         </li>
     </ol>
 
     <h2>2. 설계 목표</h2>
-    <p>외부 API 호출 흐름을 제어할 수 있어야 하고, API에 장애가 발생하면 개발자가 직접 확인하지 않더라도 문제 상황을 인지할 수 있어야 합니다. <br>
-        또한, 문제 원인 분석이 쉽도록 로그를 읽기 쉬운 구조로 개선해야 합니다.
-    </p>
+    <p>문제를 제어, 탐지, 분석 세 단계로 나누어 각각의 목표와 수단을 정했습니다.</p>
+    <table class="compare">
+        <tr>
+            <th>단계</th>
+            <th>목표</th>
+            <th>수단</th>
+        </tr>
+        <tr>
+            <td>제어</td>
+            <td>일시적 오류는 흡수하고, 지속되는 장애는 호출 자체를 차단</td>
+            <td>Resilience4j Retry, Circuit Breaker</td>
+        </tr>
+        <tr>
+            <td>탐지</td>
+            <td>개발자가 확인하지 않아도 장애를 먼저 인지</td>
+            <td>Micrometer 메트릭, Prometheus, Grafana 대시보드, 이메일 알림</td>
+        </tr>
+        <tr>
+            <td>분석</td>
+            <td>어떤 요청이 언제, 어디서 실패했는지 조회</td>
+            <td>JSON 구조화 로그, Promtail·Loki, Grafana, 요청 ID</td>
+        </tr>
+    </table>
 
     <h2>3. 해결</h2>
-    <p>저는 이 문제를 <strong>제어, 탐지, 분석</strong> 단계로 나누어서 해결하였습니다.<br>
-        문제가 생길 수 있는 부분을 제어하는 것, 문제를 발견할 수 있는 탐지 가능성, 큰 비용을 들이지 않고도 분석 가능한 구조를 고려하였습니다.</p>
 
     <h3>1) 제어 - Retry와 Circuit Breaker</h3>
-    <img src="../../images/api/image1.png">
-    <p>외부 API 호출의 안정성을 위해 Resilience4j라는 회복 탄력성 도구를 이용하였습니다. <br>
-        API 호출의 재시도를 위해 Retry로 감싸고, Circuit Breaker 로직으로 감싸서 반복적으로 요청에 실패하는 경우 Circuit Breaker가 작동하게 되어 API 호출을 원천적으로 차단할 수 있습니다.</p>
+    <img src="../../images/api/image1.png" alt="Retry와 Circuit Breaker 호출 흐름">
+    <ul>
+        <li><strong>Retry</strong>: 서버 오류가 나면 최대 3회(최초 시도 포함)까지 200ms 간격으로 재시도해서, 일시적인 오류로 사용자가 실패를 겪지 않게 합니다.</li>
+        <li><strong>Circuit Breaker</strong>: 반복해서 실패하면 호출을 차단해, 응답이 없는 서버를 기다리며 스레드가 묶이는 시간을 줄입니다.</li>
+        <li><strong>예외 분류</strong>: 예외를 서버 오류(<code>OpenAiServerException</code>)와 클라이언트 오류(<code>OpenAiClientException</code>)로 나눴습니다.
+            Retry와 Circuit Breaker 모두 서버 오류만 대상으로 해서, 요청 자체가 잘못된 경우는 재시도하지 않고 API 장애로도 집계하지 않습니다.</li>
+        <li><strong>rate limit 대응</strong>: 429 응답에서는 <code>Retry-After</code> 헤더를 확인하도록 처리했습니다.</li>
+        <li><strong>결합 방식</strong>: 재시도를 모두 마친 뒤의 최종 결과만 Circuit Breaker에 반영되게 했습니다.
+            재시도 횟수만큼 실패율이 부풀지 않고, 사용자 요청 단위로 상태를 판단합니다.</li>
+        <li><strong>검증</strong>: Circuit Breaker 없이 Retry만 따로 테스트할 수 있게 분리해서, 두 기능을 각각 테스트 코드로 검증했습니다.</li>
+    </ul>
 
-    <p>재시도 로직이 없다면 사용자는 일시적인 문제에도 채팅 응답을 받기 실패할 수 있습니다. <br>
-        또한, Circuit Breaker가 없다면 외부 API 서버가 사용 불가능한 상태에 빠졌을 때 API 호출을 조기에 차단할 수 없게 되어 쓰레드의 점유 시간이 증가하게 됩니다. 이는 서비스 장애로
-        이어질 수 있습니다. </p>
+    <h4>임계값 설정</h4>
+    <p>임계값은 실제 트래픽에서 병목을 관측해야 정할 수 있는데, 운영 기간 동안 사용량이 많지 않아 조정에 쓸 데이터를 충분히 확보하지 못했습니다.
+        그래서 초기값은 임의로 설정했고, 이미 수집 중인 Retry·Circuit Breaker 메트릭으로
+        트래픽이 생기면 아래 기준에 따라 조정하도록 정리해 두었습니다.</p>
+    <p><strong>Retry</strong></p>
+    <table class="compare">
+        <tr>
+            <th>설정</th>
+            <th>초기값</th>
+            <th>조정할 때 볼 지표</th>
+        </tr>
+        <tr>
+            <td><code>maxAttempts</code></td>
+            <td>3회 (최초 시도 포함)</td>
+            <td>일시적 오류가 몇 번째 시도에서 풀리는지, 사용자가 감내할 수 있는 대기 시간</td>
+        </tr>
+        <tr>
+            <td><code>waitDuration</code></td>
+            <td>200ms (고정)</td>
+            <td>일시적 오류가 풀리는 데 걸리는 시간, 백오프 적용 필요 여부</td>
+        </tr>
+    </table>
 
-    <h3>2) 탐지 - 메트릭과 알림 추가</h3>
-    <p>Resilience4j의 Retry와 Circuit Breaker의 메트릭을 추가하여 외부 API 호출 상태를 탐지할 수 있는 형태로 개선하였습니다.
-        메트릭을 추가하지 않는다면 Circuit Breaker가 작동하여 API 호출이 차단되어도 개발자는 인식할 수 없습니다.</p>
-    <p>또한, Grafana의 대시보드로 Retry와 Circuit Breaker의 상태를 확인할 수 있도록 시각화하고, Retry 실패율이 높거나, Circuit Breaker가 작동했을 경우 이메일로 알림을
-        보내도록 설정했습니다.</p>
+    <p><strong>Circuit Breaker</strong></p>
+    <table class="compare">
+        <tr>
+            <th>설정</th>
+            <th>초기값</th>
+            <th>조정할 때 볼 지표</th>
+        </tr>
+        <tr>
+            <td><code>failureRateThreshold</code></td>
+            <td>50%</td>
+            <td>정상 상태에서의 실패율 분포</td>
+        </tr>
+        <tr>
+            <td><code>slidingWindowSize</code></td>
+            <td>2건</td>
+            <td>호출량 (윈도우가 채워지는 속도)</td>
+        </tr>
+        <tr>
+            <td><code>waitDurationInOpenState</code></td>
+            <td>1초</td>
+            <td>장애가 보통 얼마나 지속되는지, AI API의 timeout</td>
+        </tr>
+        <tr>
+            <td><code>permittedNumberOfCallsInHalfOpenState</code></td>
+            <td>2건</td>
+            <td>복구 여부를 판단하는 데 필요한 최소 호출 수</td>
+        </tr>
+    </table>
 
-    <h3>3) 분석 - 로그 구조화 및 시각화</h3>
+    <h3>2) 탐지 - 메트릭과 알림</h3>
+    <ul>
+        <li>Retry와 Circuit Breaker의 메트릭을 수집해 Grafana 대시보드에서 상태를 볼 수 있게 했습니다.
+            메트릭이 없으면 Circuit Breaker가 호출을 차단해도 개발자는 알 수 없습니다.</li>
+        <li>Retry 실패율이 높아지거나 Circuit Breaker가 작동하면 이메일로 알림을 보냅니다.</li>
+        <li>호출 횟수 같은 커스텀 메트릭은 <code>@Counted</code> 어노테이션으로 수집합니다.</li>
+    </ul>
 
-    <p>문자열 로그를 그대로 사용하지 않고 JSON 구조화를 하는 것으로 필드를 구분하였습니다. 그리고 Grafana에서 필드별로 조회하도록 설정하여
-        언제, 어디서, 어떤 문제가 발생했는지 명확하게 확인할 수 있도록 개선했습니다.
-    </p>
-    <img src="../../images/api/image2.png">
+    <h3>3) 분석 - 로그 구조화와 조회</h3>
+    <ul>
+        <li>문자열 로그를 JSON으로 구조화해 <code>request_id</code>, <code>endpoint</code>, <code>httpMethod</code>,
+            <code>logger_name</code>, <code>message</code>, <code>stack_trace</code> 필드로 나눴습니다.</li>
+        <li>Promtail이 수집해 Loki에 저장하고, Grafana에서 필드 단위로 조회합니다.</li>
+        <li>요청 ID로 nginx 접속 로그와 앱 로그를 한 요청으로 연결합니다.
+            (<a href="mdc.html">요청 ID 추적 자세히 보기</a>)</li>
+    </ul>
+    <img src="../../images/api/image2.png" alt="Grafana에서 필드별로 조회한 로그">
 
     <h2>4. 적용 결과</h2>
-    <p>API 호출에 실패하면 재시도 로직으로 네트워크 문제 등 일시적인 문제로 인해 사용자가 불편을 겪지 않아도 되고,
-        API 서버에 문제가 있어서 요청이 불가한 경우에는 Circuit Breaker가 작동되도록 하여 원천적으로 호출을 방지합니다.<br>
-        이 문제를 알림 기능을 통해 개발자가 인지할 수 있게 되었으며, 로그의 구조화로 인해 문제 원인 파악 속도가 개선되었습니다.
-    </p>
+    <table class="compare">
+        <tr>
+            <th>상황</th>
+            <th>개선 전</th>
+            <th>개선 후</th>
+        </tr>
+        <tr>
+            <td>일시적인 API 오류</td>
+            <td>오류가 사용자에게 그대로 노출</td>
+            <td>재시도로 흡수</td>
+        </tr>
+        <tr>
+            <td>API 서버 장애가 지속</td>
+            <td>요청마다 timeout까지 스레드 점유</td>
+            <td>Circuit Breaker가 호출을 차단</td>
+        </tr>
+        <tr>
+            <td>장애 인지</td>
+            <td>로그를 열어 봐야 알 수 있음</td>
+            <td>대시보드와 이메일 알림</td>
+        </tr>
+        <tr>
+            <td>원인 분석</td>
+            <td>문자열 로그를 검색</td>
+            <td>JSON 필드 조회, 요청 ID로 nginx 로그와 연결</td>
+        </tr>
+    </table>
 
     <h2>5. 회고</h2>
-    <p>이번 개선 작업은 API 호출 안정성을 높이는 수준을 넘어 “운영 가능한 형태”로 만들었다는 점에서 의미가 있습니다. <br>
-        개선 전에는 문제가 발생하더라도 사전에 인지하거나 대응하기 어려웠고, 개발자가 직접 개입해야 문제를 파악할 수 있는 구조였습니다. </p>
-
-    <p>첫째, 제어 단계의 재시도 로직은 API 호출의 일시적인 문제를 방지하고 무제한으로 대기하는 상태를 방지합니다.
-        일정 기준 이상 실패할 경우에는 Circuit Breaker가 작동되어 API 호출을 빠르게 차단합니다.</p>
-
-    <p>둘째, 탐지 단계의 메트릭과 이메일 알림 추가를 통해 문제점을 실시간으로 인지할 수 있는 상태로 전환했습니다. </p>
-
-    <p>셋째, 분석 단계에서 로그 JSON 구조화를 통해 필드 별로 명확하게 역할을 구분하여 원하는 정보를 추출하기 쉬운 구조로 개선하였습니다.
-        이를 시각화 하는 것으로 문제 상황을 “추적”하는 것이 아닌 “조회”로 해결할 수 있게 되었습니다.</p>
-
-    <p>이번 작업을 통해 운영을 하면서 문제를 어떻게 통제할지 정하고 빠르게 감지할 수 있는 구조의 중요성을 깨달았습니다.
-        특히 외부 API를 사용하는 서비스에서 정상 흐름보다 비정상 흐름을 어떻게 처리할 것 인지가 관건이라는 것을 느꼈습니다.</p>
-
+    <ul>
+        <li>외부 API를 쓰는 서비스에서는 정상 흐름보다 비정상 흐름을 어떻게 처리할지가 관건이라는 것을 느꼈습니다.</li>
+        <li>제어만으로는 부족하고, 장애를 먼저 인지하는 탐지와 원인을 바로 조회하는 분석이 함께 있어야
+            운영 가능한 형태가 된다고 생각합니다.</li>
+        <li>문제 상황을 로그에서 "추적"하는 것이 아니라 필드로 "조회"할 수 있게 된 점이 가장 체감이 컸습니다.</li>
+    </ul>
 </div>
 </body>
 </html>
